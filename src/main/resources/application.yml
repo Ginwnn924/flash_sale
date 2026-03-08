@@ -1,0 +1,37 @@
+server:
+  port: 8080
+
+spring:
+  application:
+    name: flash-sale
+
+  datasource:
+    url: jdbc:postgresql://localhost:5432/flashsale
+    username: flashsale
+    password: flashsale123
+    driver-class-name: org.postgresql.Driver
+    hikari:
+      maximum-pool-size: 20
+      minimum-idle: 5
+      idle-timeout: 30000
+      connection-timeout: 5000
+
+  jpa:
+    hibernate:
+      ddl-auto: none
+    show-sql: false
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.PostgreSQLDialect
+        format_sql: true
+
+  sql:
+    init:
+      mode: always
+
+  data:
+    redis:
+      host: localhost
+      port: 6379
+      timeout: 3000ms
+
