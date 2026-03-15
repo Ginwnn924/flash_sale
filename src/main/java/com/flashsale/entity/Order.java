@@ -26,10 +26,6 @@ public class Order {
     @JoinColumn(name = "flash_sale_item_id", nullable = false)
     private FlashSaleItem flashSaleItem;
 
-    @ManyToOne(fetch = FetchType.LAZY)
-    @JoinColumn(name = "product_id", nullable = false)
-    private Product product;
-
     @Column(name = "product_name", nullable = false, length = 150)
     private String productName;
 

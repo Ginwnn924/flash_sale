@@ -19,6 +19,7 @@ import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.time.Duration;
 import java.time.LocalDateTime;
 import java.util.List;
 
@@ -77,20 +78,43 @@ public class FlashSaleService {
             throw new SoldOutException();
         }
 
-        Order order = Order.builder()
-                .userId(userId)
-                .flashSaleItem(flashSaleItem)
-                .product(flashSaleItem.getProduct())
-                .productName(flashSaleItem.getProduct().getBrand() + " " + flashSaleItem.getProduct().getModel())
-                .price(flashSaleItem.getFlashPrice())
-                .status(OrderStatus.PENDING)
+        String orderKey = "order:" + flashSaleItemId + ":" + userId;
+        Boolean isNew = redisTemplate.opsForValue()
+                .setIfAbsent(orderKey, "QUEUED", Duration.ofHours(24));
+        
+        if (Boolean.FALSE.equals(isNew)) {
+            throw new DuplicateOrderException();
+        }
+
+        return OrderResponseDTO.builder()
+                .status("QUEUED")
+                .message("Đơn hàng đang xử lí. Xin vui lòng chờ.")
                 .build();
 
-        Order savedOrder = orderRepository.save(order);
-        log.info("Order created: userId={}, orderId={}, flashSaleItemId={}", userId, savedOrder.getId(),
-                flashSaleItemId);
 
-        return flashSaleMapper.toOrderResponseDTO(savedOrder);
+
+
+        // Để về sau xử lí message queue
+        // try {
+        //     Order order = Order.builder()
+        //             .userId(userId)
+        //             .flashSaleItem(flashSaleItem)
+        //             .productName(flashSaleItem.getProduct().getBrand() + " " + flashSaleItem.getProduct().getModel())
+        //             .price(flashSaleItem.getFlashPrice())
+        //             .status(OrderStatus.PENDING)
+        //             .build();
+
+        //     Order savedOrder = orderRepository.save(order);
+        //     log.info("Order created: userId={}, orderId={}, flashSaleItemId={}", userId, savedOrder.getId(),
+        //             flashSaleItemId);
+
+        //     return flashSaleMapper.toOrderResponseDTO(savedOrder);
+        // }
+        // // Fail khi save orders (trùng user, connection timeout, deadlock, etc.) => Trả lại stock cho Redis vì redis không có transaction
+        // catch(Exception e) {
+        //     redisTemplate.opsForValue().increment(stockKey);
+        //     throw e;
+        // }
     }
 
     public int warmUpStock() {

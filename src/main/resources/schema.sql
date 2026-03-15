@@ -21,7 +21,6 @@ CREATE TABLE IF NOT EXISTS orders (
     id BIGSERIAL PRIMARY KEY,
     user_id BIGINT NOT NULL,
     flash_sale_item_id BIGINT NOT NULL REFERENCES flash_sale_items(id),
-    product_id BIGINT NOT NULL REFERENCES products(id),
     product_name VARCHAR(150) NOT NULL,
     price BIGINT NOT NULL,
     status SMALLINT NOT NULL DEFAULT 0,
