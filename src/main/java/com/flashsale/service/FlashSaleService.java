@@ -1,17 +1,17 @@
 package com.flashsale.service;
 
+import com.flashsale.constant.RedisKeys;
 import com.flashsale.dto.FlashSaleProductDTO;
 import com.flashsale.dto.OrderResponseDTO;
 import com.flashsale.dto.PurchaseRequestDTO;
 import com.flashsale.entity.FlashSaleItem;
-import com.flashsale.entity.Order;
-import com.flashsale.enums.OrderStatus;
 import com.flashsale.exception.DuplicateOrderException;
 import com.flashsale.exception.FlashSaleNotActiveException;
 import com.flashsale.exception.SoldOutException;
 import com.flashsale.mapper.FlashSaleMapper;
+import com.flashsale.messaging.OrderMessage;
+import com.flashsale.messaging.producer.OrderProducer;
 import com.flashsale.repository.FlashSaleItemRepository;
-import com.flashsale.repository.OrderRepository;
 import jakarta.persistence.EntityNotFoundException;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -28,12 +28,10 @@ import java.util.List;
 @Slf4j
 public class FlashSaleService {
 
-    private static final String STOCK_KEY_PREFIX = "stock:flashsale:";
-
     private final FlashSaleItemRepository flashSaleItemRepository;
-    private final OrderRepository orderRepository;
     private final StringRedisTemplate redisTemplate;
     private final FlashSaleMapper flashSaleMapper;
+    private final OrderProducer orderProducer;
 
     public List<FlashSaleProductDTO> getFlashSaleProducts() {
         List<FlashSaleItem> activeItems = flashSaleItemRepository
@@ -42,7 +40,7 @@ public class FlashSaleService {
         return activeItems.stream()
                 .map(item -> {
                     FlashSaleProductDTO dto = flashSaleMapper.toFlashSaleProductDTO(item);
-                    String stockKey = STOCK_KEY_PREFIX + item.getId();
+                    String stockKey = RedisKeys.STOCK_KEY_PREFIX + item.getId();
                     String cachedStock = redisTemplate.opsForValue().get(stockKey);
                     if (cachedStock != null) {
                         dto.setRemainingStock(Integer.parseInt(cachedStock));
@@ -52,7 +50,6 @@ public class FlashSaleService {
                 .toList();
     }
 
-    @Transactional
     public OrderResponseDTO purchaseFlashSaleItem(PurchaseRequestDTO request) {
         Long userId = request.getUserId();
         Long flashSaleItemId = request.getFlashSaleItemId();
@@ -64,11 +61,8 @@ public class FlashSaleService {
             throw new FlashSaleNotActiveException();
         }
 
-        if (orderRepository.existsByUserIdAndFlashSaleItemId(userId, flashSaleItemId)) {
-            throw new DuplicateOrderException();
-        }
 
-        String stockKey = STOCK_KEY_PREFIX + flashSaleItemId;
+        String stockKey = RedisKeys.STOCK_KEY_PREFIX + flashSaleItemId;
         Long remainingStock = redisTemplate.opsForValue().decrement(stockKey);
 
         if (remainingStock == null || remainingStock < 0) {
@@ -78,49 +72,45 @@ public class FlashSaleService {
             throw new SoldOutException();
         }
 
-        String orderKey = "order:" + flashSaleItemId + ":" + userId;
+        String orderKey = RedisKeys.ORDER_KEY_PREFIX + flashSaleItemId + ":" + userId;
         Boolean isNew = redisTemplate.opsForValue()
                 .setIfAbsent(orderKey, "QUEUED", Duration.ofHours(24));
         
         if (Boolean.FALSE.equals(isNew)) {
+            redisTemplate.opsForValue().increment(stockKey);
             throw new DuplicateOrderException();
         }
 
+        // send message to rabbitmq
+        OrderMessage orderMessage = OrderMessage.builder()
+                .userId(userId)
+                .flashSaleItemId(flashSaleItemId)
+                .productName(flashSaleItem.getProduct().getBrand() + " " + flashSaleItem.getProduct().getModel())
+                .price(flashSaleItem.getFlashPrice())
+                .orderKey(orderKey)
+                .createdAt(LocalDateTime.now())
+                .build();
+
+        try {
+            orderProducer.publishOrder(orderMessage);
+        } catch (Exception e) {
+            // Rollback stock
+            redisTemplate.opsForValue().increment(stockKey);
+            redisTemplate.delete(orderKey);
+            throw new RuntimeException("Không thể xử lý đơn hàng, vui lòng thử lại");
+        }
         return OrderResponseDTO.builder()
                 .status("QUEUED")
                 .message("Đơn hàng đang xử lí. Xin vui lòng chờ.")
                 .build();
 
 
-
-
-        // Để về sau xử lí message queue
-        // try {
-        //     Order order = Order.builder()
-        //             .userId(userId)
-        //             .flashSaleItem(flashSaleItem)
-        //             .productName(flashSaleItem.getProduct().getBrand() + " " + flashSaleItem.getProduct().getModel())
-        //             .price(flashSaleItem.getFlashPrice())
-        //             .status(OrderStatus.PENDING)
-        //             .build();
-
-        //     Order savedOrder = orderRepository.save(order);
-        //     log.info("Order created: userId={}, orderId={}, flashSaleItemId={}", userId, savedOrder.getId(),
-        //             flashSaleItemId);
-
-        //     return flashSaleMapper.toOrderResponseDTO(savedOrder);
-        // }
-        // // Fail khi save orders (trùng user, connection timeout, deadlock, etc.) => Trả lại stock cho Redis vì redis không có transaction
-        // catch(Exception e) {
-        //     redisTemplate.opsForValue().increment(stockKey);
-        //     throw e;
-        // }
     }
 
     public int warmUpStock() {
         List<FlashSaleItem> items = flashSaleItemRepository.findAll();
         items.forEach(item -> {
-            String key = STOCK_KEY_PREFIX + item.getId();
+            String key = RedisKeys.STOCK_KEY_PREFIX + item.getId();
             redisTemplate.opsForValue().set(key, String.valueOf(item.getTotalStock()));
             log.info("Loaded stock: {} = {}", key, item.getTotalStock());
         });
